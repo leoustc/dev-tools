@@ -172,10 +172,31 @@ release() {
     echo "✅ Release complete. Hidden ref now mirrors ${REMOTE_TARGET_BRANCH}."
 }
 
+# ----------------------------------------------------
+## 🛠️ Install / Update (copy script to /usr/local/bin)
+# ----------------------------------------------------
+install_or_update() {
+    TARGET="/usr/local/bin/autogit"
+    SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || realpath "$0")"
+
+    if [[ -z "${SCRIPT_PATH}" ]]; then
+        echo "❌ Could not resolve script path for installation."
+        exit 1
+    fi
+
+    echo "📦 Installing/updating autogit to ${TARGET}..."
+    if cp "${SCRIPT_PATH}" "${TARGET}" && chmod +x "${TARGET}"; then
+        echo "✅ Installed/updated ${TARGET}"
+    else
+        echo "❌ Failed to write to ${TARGET}. Try running with sudo."
+        exit 1
+    fi
+}
+
 # --- Script Execution ---
 
 if [ $# -eq 0 ]; then
-    echo "Usage: $0 {push|pull|release}"
+    echo "Usage: $0 {push|pull|release|install|update}"
     exit 1
 fi
 
@@ -187,7 +208,9 @@ elif [ "${COMMAND}" == "pull" ]; then
     pull_dev
 elif [ "${COMMAND}" == "release" ]; then
     release
+elif [ "${COMMAND}" == "install" ] || [ "${COMMAND}" == "update" ]; then
+    install_or_update
 else
-    echo "Usage: $0 {push|pull|release}"
+    echo "Usage: $0 {push|pull|release|install|update}"
     exit 1
 fi
