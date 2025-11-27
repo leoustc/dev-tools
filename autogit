@@ -5,6 +5,7 @@ DEV_BRANCH_NAME="dev"
 MAIN_BRANCH="main"
 # CRITICAL: Define the hidden namespace path
 HIDDEN_REF_PATH="refs/hidden/${DEV_BRANCH_NAME}"
+TIMESTAMP=$(TZ='America/Los_Angeles' date "+%s")
 
 # --- Helper Functions ---
 
@@ -33,7 +34,7 @@ checkout_dev() {
 push_dev() {
     LOCAL_DEV_BRANCH="${DEV_BRANCH_NAME}"
     REMOTE_REF="${HIDDEN_REF_PATH}" 
-    INITIAL_COMMIT_MSG="Dev Cycle Started: $(date +%Y-%m-%d %H:%M:%S)"
+    INITIAL_COMMIT_MSG="Dev Cycle Started: ${TIMESTAMP}"
 
     echo "➡️ Checking out or creating development branch: **${LOCAL_DEV_BRANCH}**"
     checkout_dev
