@@ -59,6 +59,8 @@ push_dev() {
     git push --force origin "HEAD:${REMOTE_REF}" || exit 1
     
     echo "✅ Development push complete. Access via hidden ref is enabled."
+
+    git branch -v
 }
 
 # ----------------------------------------------------
@@ -70,7 +72,9 @@ pull_dev() {
 
     # Protect against deleting local work if dirty
     if [[ -n "$(git status --porcelain)" ]]; then
-        echo "❌ Working tree not clean. Commit/stash changes before pulling dev."
+        echo "❌ Working tree not clean."
+        echo "   Detect local change; please commit it via 'autogit push' or"
+        echo "   run 'git reset --hard' to clean before pulling."
         exit 1
     fi
 
@@ -94,6 +98,8 @@ pull_dev() {
         echo "❌ Remote hidden reference **${REMOTE_REF}** not found. Please run 'autogit push' first."
         exit 1
     fi
+
+    git branch -v
 }
 
 # ----------------------------------------------------
@@ -171,6 +177,8 @@ release() {
         git branch -D ${LOCAL_SOURCE_BRANCH}
     fi
     echo "✅ Release complete. Hidden ref now mirrors ${REMOTE_TARGET_BRANCH}."
+
+    git branch -v
 }
 
 # ----------------------------------------------------
