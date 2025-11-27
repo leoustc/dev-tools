@@ -1,0 +1,170 @@
+#!/bin/bash
+
+# a script for git workflow to dev and publish repo to git public
+
+# Configuration
+DEV_BRANCH_PREFIX="dev-"
+MAIN_BRANCH="main"
+
+# Function to find the latest existing remote/local dev branch.
+get_latest_dev_branch() {
+    # 1. Fetch to ensure we have the latest remote branch list
+    git fetch origin > /dev/null 2>&1
+
+    # 2. Get list of all branches (remote and local) matching the prefix, sorted by committer date (descending)
+    LATEST_BRANCH=$(git for-each-ref \
+        --sort='-committerdate' \
+        --format='%(refname:short)' \
+        "refs/heads/${DEV_BRANCH_PREFIX}*" "refs/remotes/origin/${DEV_BRANCH_PREFIX}*" | \
+        head -n 1 | \
+        sed 's/^origin\///')
+        
+    # 3. Check if a branch was found
+    if [[ -z "${LATEST_BRANCH}" ]]; then
+        # No existing dev branch found, create a new one based on today's date
+        DATE_SUFFIX=$(date +%Y-%m-%d)
+        echo "${DEV_BRANCH_PREFIX}${DATE_SUFFIX}"
+    else
+        echo "${LATEST_BRANCH}"
+    fi
+}
+
+# 2) RENAMED FUNCTION: dev_push (Handles staging, amend/commit, and push)
+dev_push() {
+    LOCAL_DEV_BRANCH=$(get_latest_dev_branch)
+    # This message is only used for the *initial* commit on the branch
+    INITIAL_COMMIT_MSG="Dev Cycle Started: $(date +%Y-%m-%d %H:%M:%S)"
+
+    echo "➡️ Checking out or creating development branch: **${LOCAL_DEV_BRANCH}**"
+    
+    if ! git rev-parse --verify ${LOCAL_DEV_BRANCH} >/dev/null 2>&1; then
+        git checkout -b ${LOCAL_DEV_BRANCH} || exit 1
+        echo "✨ Created new development branch: **${LOCAL_DEV_BRANCH}**"
+    else
+        git checkout ${LOCAL_DEV_BRANCH} || exit 1
+        echo "🔄 Resuming existing development cycle on: **${LOCAL_DEV_BRANCH}**"
+    fi
+    
+    echo "🏗️ Staging all local changes..."
+    git add .
+    
+    # Check if the branch has any commits yet
+    COMMIT_COUNT=$(git rev-list --count HEAD 2>/dev/null || echo 0)
+    
+    if [ "$COMMIT_COUNT" -eq 0 ]; then
+        # First commit on this branch: Set the initial timestamp message
+        echo "📝 Creating initial commit with message: '${INITIAL_COMMIT_MSG}'"
+        git commit -m "${INITIAL_COMMIT_MSG}" || { echo "⚠️ No changes to commit."; }
+    else
+        # Subsequent commits use amend --no-edit to bundle changes without changing the message
+        echo "📝 Amending previous commit to hide local history (message preserved)."
+        # Note: --amend and --no-edit bundle the new changes into the existing commit
+        git commit --amend --no-edit || { echo "⚠️ No changes to amend."; }
+    fi
+    
+    # Force push the dev branch immediately (necessary for history rewrite/amend)
+    echo "⏫ Force pushing changes to remote **origin/${LOCAL_DEV_BRANCH}** (required after amend)..."
+    git push --force origin ${LOCAL_DEV_BRANCH} || exit 1
+    
+    echo "✅ Development push complete. History is kept clean with a single commit."
+}
+
+# 3) dev pull (Logic is clean refresh from remote - unchanged)
+dev_pull() {
+    LOCAL_DEV_BRANCH=$(get_latest_dev_branch)
+
+    CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+    if [[ "${CURRENT_BRANCH}" == "${LOCAL_DEV_BRANCH}" ]]; then
+        echo "➡️ Moving to **${MAIN_BRANCH}** temporarily before deletion..."
+        git checkout ${MAIN_BRANCH} || { echo "❌ Could not checkout **${MAIN_BRANCH}**."; exit 1; }
+    fi
+
+    if git rev-parse --verify ${LOCAL_DEV_BRANCH} >/dev/null 2>&1; then
+        echo "🗑️ Deleting existing local branch: **${LOCAL_DEV_BRANCH}**"
+        git branch -D ${LOCAL_DEV_BRANCH}
+    fi
+
+    echo "⬇️ Fetching latest remote branches..."
+    git fetch origin
+    
+    echo "➡️ Checking out fresh branch from **origin/${LOCAL_DEV_BRANCH}**"
+    
+    if git checkout -b ${LOCAL_DEV_BRANCH} "origin/${LOCAL_DEV_BRANCH}" >/dev/null 2>&1; then
+        echo "✅ Successfully checked out and tracked **${LOCAL_DEV_BRANCH}** from remote."
+    else
+        echo "❌ Remote branch **origin/${LOCAL_DEV_BRANCH}** not found. Please run 'git-workflow.sh dev push' first to establish it."
+        exit 1
+    fi
+}
+
+
+# 4 & 5) release (Squash, commit with custom message, push main, delete dev branch - unchanged)
+release() {
+    LOCAL_DEV_BRANCH=$(get_latest_dev_branch)
+
+    # 1. Ensure we are on the main branch
+    echo "➡️ Checking out **${MAIN_BRANCH}** branch..."
+    git checkout ${MAIN_BRANCH} || exit 1
+    git pull origin ${MAIN_BRANCH} # Get latest main before merging
+
+    # 2. Ask user for squashed commit message (ONLY HERE)
+    read -p "Enter a **SQUASHED** commit message for the release: " RELEASE_MSG
+    
+    if [[ -z "${RELEASE_MSG}" ]]; then
+        echo "❌ Release message cannot be empty. Aborting release."
+        exit 1
+    fi
+
+    echo "🔄 Squashing and merging **${LOCAL_DEV_BRANCH}** into **${MAIN_BRANCH}**..."
+    
+    if ! git merge --squash ${LOCAL_DEV_BRANCH}; then
+        echo "❌ Merge failed. Please resolve conflicts manually and then run 'git commit -m \"$RELEASE_MSG\"' and 'git push'."
+        exit 1
+    fi
+    
+    # 3. Commit the squashed merge with the user-provided message
+    echo "📝 Committing squashed merge with message: **'${RELEASE_MSG}'**"
+    git commit -m "${RELEASE_MSG}" || { echo "⚠️ Nothing to commit (already merged?)."; exit 1; }
+
+    # 4. Push to remote main
+    echo "🚀 Pushing release commit to **origin/${MAIN_BRANCH}**..."
+    git push origin ${MAIN_BRANCH} || exit 1
+    echo "✅ Release to **${MAIN_BRANCH}** complete."
+
+    # 5. Delete the dev branch (local and remote)
+    echo "🧹 Deleting local development branch: **${LOCAL_DEV_BRANCH}**"
+    git branch -D ${LOCAL_DEV_BRANCH} 
+    
+    echo "🗑️ Deleting remote development branch: **origin/${LOCAL_DEV_BRANCH}**"
+    git push origin --delete ${LOCAL_DEV_BRANCH} || { echo "⚠️ Remote branch may not have existed."; }
+    
+    echo "🎉 Cleanup complete."
+}
+
+
+# --- Script Execution ---
+
+if [ $# -eq 0 ]; then
+    echo "Usage: $0 {dev push|dev pull|release}"
+    exit 1
+fi
+
+COMMAND="$1"
+SUB_COMMAND="$2"
+
+if [ "${COMMAND}" == "dev" ]; then
+    # Renamed 'commit' to 'push' here:
+    if [ "${SUB_COMMAND}" == "push" ]; then
+        dev_push
+    elif [ "${SUB_COMMAND}" == "pull" ]; then
+        dev_pull
+    else
+        echo "Usage: $0 dev {push|pull}"
+        exit 1
+    fi
+elif [ "${COMMAND}" == "release" ]; then
+    release
+else
+    echo "Usage: $0 {dev push|dev pull|release}"
+    exit 1
+fi
