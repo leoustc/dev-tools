@@ -54,11 +54,10 @@ push_dev() {
     echo "✅ Development push complete."
 }
 
----
-
+# ---
 ## ⬇️ Pull (Sync from Hidden Ref)
-
 # 3) pull_dev: Fetches and checks out the hidden ref
+
 pull_dev() {
     LOCAL_DEV_BRANCH="${DEV_BRANCH_NAME}"
     REMOTE_REF="${HIDDEN_REF_PATH}"
@@ -88,7 +87,7 @@ pull_dev() {
     fi
 }
 
----
+# ---
 
 ## 🚢 Release (Merge to Main & Cleanup)
 
