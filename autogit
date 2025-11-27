@@ -1,50 +1,36 @@
 #!/bin/bash
 
-# a script for git workflow to dev and publish repo to git public
-
 # Configuration
-DEV_BRANCH_PREFIX="dev-"
+DEV_BRANCH_NAME="dev"
 MAIN_BRANCH="main"
+# --- CRITICAL: Define the hidden namespace path ---
+HIDDEN_REF_PATH="refs/hidden/${DEV_BRANCH_NAME}"
 
-# Function to find the latest existing remote/local dev branch.
-get_latest_dev_branch() {
-    # 1. Fetch to ensure we have the latest remote branch list
-    git fetch origin > /dev/null 2>&1
-
-    # 2. Get list of all branches (remote and local) matching the prefix, sorted by committer date (descending)
-    LATEST_BRANCH=$(git for-each-ref \
-        --sort='-committerdate' \
-        --format='%(refname:short)' \
-        "refs/heads/${DEV_BRANCH_PREFIX}*" "refs/remotes/origin/${DEV_BRANCH_PREFIX}*" | \
-        head -n 1 | \
-        sed 's/^origin\///')
-        
-    # 3. Check if a branch was found
-    if [[ -z "${LATEST_BRANCH}" ]]; then
-        # No existing dev branch found, create a new one based on today's date
-        DATE_SUFFIX=$(date +%Y-%m-%d)
-        echo "${DEV_BRANCH_PREFIX}${DATE_SUFFIX}"
-    else
-        echo "${LATEST_BRANCH}"
-    fi
-}
-
-# 2) RENAMED FUNCTION: dev_push (Handles staging, amend/commit, and push)
-dev_push() {
-    LOCAL_DEV_BRANCH=$(get_latest_dev_branch)
-    # This message is only used for the *initial* commit on the branch
+# ----------------------------------------------------
+## 🚀 Push (Commit & Push to Hidden Ref)
+# ----------------------------------------------------
+# Handles staging, amend/commit, and push to the HIDDEN_REF_PATH
+push_dev() {
+    LOCAL_DEV_BRANCH="${DEV_BRANCH_NAME}"
+    REMOTE_REF="${HIDDEN_REF_PATH}" 
     INITIAL_COMMIT_MSG="Dev Cycle Started: $(date +%Y-%m-%d %H:%M:%S)"
 
     echo "➡️ Checking out or creating development branch: **${LOCAL_DEV_BRANCH}**"
     
+    # Check out the branch. Try to fetch from the hidden ref first to create a local branch if needed.
     if ! git rev-parse --verify ${LOCAL_DEV_BRANCH} >/dev/null 2>&1; then
-        git checkout -b ${LOCAL_DEV_BRANCH} || exit 1
-        echo "✨ Created new development branch: **${LOCAL_DEV_BRANCH}**"
-    else
-        git checkout ${LOCAL_DEV_BRANCH} || exit 1
-        echo "🔄 Resuming existing development cycle on: **${LOCAL_DEV_BRANCH}**"
+        if ! git fetch origin "${REMOTE_REF}:${LOCAL_DEV_BRANCH}" >/dev/null 2>&1; then
+             # If remote hidden ref doesn't exist (first push), create a local branch from main
+             echo "⚠️ Hidden remote ref not found. Creating local branch **${LOCAL_DEV_BRANCH}** from **${MAIN_BRANCH}**."
+             git checkout ${MAIN_BRANCH}
+             git checkout -b ${LOCAL_DEV_BRANCH} || exit 1
+        fi
+        echo "✨ Started new development cycle on: **${LOCAL_DEV_BRANCH}**"
     fi
     
+    git checkout ${LOCAL_DEV_BRANCH} || exit 1
+    echo "🔄 Resuming existing development cycle on: **${LOCAL_DEV_BRANCH}**"
+
     echo "🏗️ Staging all local changes..."
     git add .
     
@@ -52,62 +38,71 @@ dev_push() {
     COMMIT_COUNT=$(git rev-list --count HEAD 2>/dev/null || echo 0)
     
     if [ "$COMMIT_COUNT" -eq 0 ]; then
-        # First commit on this branch: Set the initial timestamp message
+        # First commit: Set the initial timestamp message
         echo "📝 Creating initial commit with message: '${INITIAL_COMMIT_MSG}'"
         git commit -m "${INITIAL_COMMIT_MSG}" || { echo "⚠️ No changes to commit."; }
     else
         # Subsequent commits use amend --no-edit to bundle changes without changing the message
         echo "📝 Amending previous commit to hide local history (message preserved)."
-        # Note: --amend and --no-edit bundle the new changes into the existing commit
         git commit --amend --no-edit || { echo "⚠️ No changes to amend."; }
     fi
     
-    # Force push the dev branch immediately (necessary for history rewrite/amend)
-    echo "⏫ Force pushing changes to remote **origin/${LOCAL_DEV_BRANCH}** (required after amend)..."
-    git push --force origin ${LOCAL_DEV_BRANCH} || exit 1
+    # Force push the local branch HEAD to the HIDDEN remote reference
+    echo "⏫ Force pushing changes to hidden remote ref: **${REMOTE_REF}**..."
+    git push --force origin "HEAD:${REMOTE_REF}" || exit 1
     
-    echo "✅ Development push complete. History is kept clean with a single commit."
+    echo "✅ Development push complete."
 }
 
-# 3) dev pull (Logic is clean refresh from remote - unchanged)
-dev_pull() {
-    LOCAL_DEV_BRANCH=$(get_latest_dev_branch)
+---
 
+## ⬇️ Pull (Sync from Hidden Ref)
+
+# 3) pull_dev: Fetches and checks out the hidden ref
+pull_dev() {
+    LOCAL_DEV_BRANCH="${DEV_BRANCH_NAME}"
+    REMOTE_REF="${HIDDEN_REF_PATH}"
+
+    # Ensure we are not on the branch we are about to delete
     CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
     if [[ "${CURRENT_BRANCH}" == "${LOCAL_DEV_BRANCH}" ]]; then
         echo "➡️ Moving to **${MAIN_BRANCH}** temporarily before deletion..."
         git checkout ${MAIN_BRANCH} || { echo "❌ Could not checkout **${MAIN_BRANCH}**."; exit 1; }
     fi
 
+    # Delete the existing local branch if it exists 
     if git rev-parse --verify ${LOCAL_DEV_BRANCH} >/dev/null 2>&1; then
         echo "🗑️ Deleting existing local branch: **${LOCAL_DEV_BRANCH}**"
         git branch -D ${LOCAL_DEV_BRANCH}
     fi
 
-    echo "⬇️ Fetching latest remote branches..."
-    git fetch origin
+    echo "⬇️ Fetching and checking out fresh local branch from hidden remote ref: **${REMOTE_REF}**"
     
-    echo "➡️ Checking out fresh branch from **origin/${LOCAL_DEV_BRANCH}**"
-    
-    if git checkout -b ${LOCAL_DEV_BRANCH} "origin/${LOCAL_DEV_BRANCH}" >/dev/null 2>&1; then
-        echo "✅ Successfully checked out and tracked **${LOCAL_DEV_BRANCH}** from remote."
+    # Fetch the specific hidden ref and create a local branch from it
+    if git fetch origin "${REMOTE_REF}:${LOCAL_DEV_BRANCH}" >/dev/null 2>&1; then
+        git checkout ${LOCAL_DEV_BRANCH}
+        echo "✅ Pulled and checked out local branch **${LOCAL_DEV_BRANCH}**."
     else
-        echo "❌ Remote branch **origin/${LOCAL_DEV_BRANCH}** not found. Please run 'git-workflow.sh dev push' first to establish it."
+        echo "❌ Remote hidden reference **${REMOTE_REF}** not found. Please run 'git-workflow.sh push' first."
         exit 1
     fi
 }
 
+---
 
-# 4 & 5) release (Squash, commit with custom message, push main, delete dev branch - unchanged)
+## 🚢 Release (Merge to Main & Cleanup)
+
+# 4 & 5) release: Squashes the hidden ref into main, and deletes the hidden ref.
 release() {
-    LOCAL_DEV_BRANCH=$(get_latest_dev_branch)
+    LOCAL_DEV_BRANCH="${DEV_BRANCH_NAME}"
+    REMOTE_REF="${HIDDEN_REF_PATH}"
 
     # 1. Ensure we are on the main branch
     echo "➡️ Checking out **${MAIN_BRANCH}** branch..."
     git checkout ${MAIN_BRANCH} || exit 1
     git pull origin ${MAIN_BRANCH} # Get latest main before merging
 
-    # 2. Ask user for squashed commit message (ONLY HERE)
+    # 2. Ask user for squashed commit message
     read -p "Enter a **SQUASHED** commit message for the release: " RELEASE_MSG
     
     if [[ -z "${RELEASE_MSG}" ]]; then
@@ -115,9 +110,10 @@ release() {
         exit 1
     fi
 
-    echo "🔄 Squashing and merging **${LOCAL_DEV_BRANCH}** into **${MAIN_BRANCH}**..."
+    echo "🔄 Squashing and merging **${LOCAL_DEV_BRANCH}** from hidden ref into **${MAIN_BRANCH}**..."
     
-    if ! git merge --squash ${LOCAL_DEV_BRANCH}; then
+    # Merge the contents of the remote hidden ref into main
+    if ! git merge --squash "${REMOTE_REF}"; then
         echo "❌ Merge failed. Please resolve conflicts manually and then run 'git commit -m \"$RELEASE_MSG\"' and 'git push'."
         exit 1
     fi
@@ -131,40 +127,31 @@ release() {
     git push origin ${MAIN_BRANCH} || exit 1
     echo "✅ Release to **${MAIN_BRANCH}** complete."
 
-    # 5. Delete the dev branch (local and remote)
+    # 5. Delete the dev branch (local and HIDDEN remote ref)
     echo "🧹 Deleting local development branch: **${LOCAL_DEV_BRANCH}**"
     git branch -D ${LOCAL_DEV_BRANCH} 
     
-    echo "🗑️ Deleting remote development branch: **origin/${LOCAL_DEV_BRANCH}**"
-    git push origin --delete ${LOCAL_DEV_BRANCH} || { echo "⚠️ Remote branch may not have existed."; }
+    echo "🗑️ Deleting hidden remote reference: **${REMOTE_REF}**"
+    # To delete a custom ref, you push nothing to it:
+    git push origin :${REMOTE_REF} || { echo "⚠️ Remote reference may not have existed."; }
     
     echo "🎉 Cleanup complete."
 }
 
-
-# --- Script Execution ---
-
 if [ $# -eq 0 ]; then
-    echo "Usage: $0 {dev push|dev pull|release}"
+    echo "Usage: $0 {push|pull|release}"
     exit 1
 fi
 
 COMMAND="$1"
-SUB_COMMAND="$2"
 
-if [ "${COMMAND}" == "dev" ]; then
-    # Renamed 'commit' to 'push' here:
-    if [ "${SUB_COMMAND}" == "push" ]; then
-        dev_push
-    elif [ "${SUB_COMMAND}" == "pull" ]; then
-        dev_pull
-    else
-        echo "Usage: $0 dev {push|pull}"
-        exit 1
-    fi
+if [ "${COMMAND}" == "push" ]; then
+    push_dev
+elif [ "${COMMAND}" == "pull" ]; then
+    pull_dev
 elif [ "${COMMAND}" == "release" ]; then
     release
 else
-    echo "Usage: $0 {dev push|dev pull|release}"
+    echo "Usage: $0 {push|pull|release}"
     exit 1
 fi
