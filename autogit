@@ -3,47 +3,53 @@
 # Configuration
 DEV_BRANCH_NAME="dev"
 MAIN_BRANCH="main"
-# --- CRITICAL: Define the hidden namespace path ---
+# CRITICAL: Define the hidden namespace path
 HIDDEN_REF_PATH="refs/hidden/${DEV_BRANCH_NAME}"
 
-# ----------------------------------------------------
-## 🚀 Push (Commit & Push to Hidden Ref)
-# ----------------------------------------------------
-# Handles staging, amend/commit, and push to the HIDDEN_REF_PATH
-push_dev() {
+# --- Helper Functions ---
+
+# Function to check out or create the local dev branch
+checkout_dev() {
     LOCAL_DEV_BRANCH="${DEV_BRANCH_NAME}"
     REMOTE_REF="${HIDDEN_REF_PATH}" 
-    INITIAL_COMMIT_MSG="Dev Cycle Started: $(date +%Y-%m-%d %H:%M:%S)"
-
-    echo "➡️ Checking out or creating development branch: **${LOCAL_DEV_BRANCH}**"
     
-    # Check out the branch. Try to fetch from the hidden ref first to create a local branch if needed.
     if ! git rev-parse --verify ${LOCAL_DEV_BRANCH} >/dev/null 2>&1; then
+        # Local branch doesn't exist. Try to fetch the hidden remote ref to create it.
         if ! git fetch origin "${REMOTE_REF}:${LOCAL_DEV_BRANCH}" >/dev/null 2>&1; then
              # If remote hidden ref doesn't exist (first push), create a local branch from main
              echo "⚠️ Hidden remote ref not found. Creating local branch **${LOCAL_DEV_BRANCH}** from **${MAIN_BRANCH}**."
-             git checkout ${MAIN_BRANCH}
+             git checkout ${MAIN_BRANCH} || exit 1
              git checkout -b ${LOCAL_DEV_BRANCH} || exit 1
         fi
         echo "✨ Started new development cycle on: **${LOCAL_DEV_BRANCH}**"
     fi
     
     git checkout ${LOCAL_DEV_BRANCH} || exit 1
-    echo "🔄 Resuming existing development cycle on: **${LOCAL_DEV_BRANCH}**"
+}
+
+# ----------------------------------------------------
+## 🚀 Push (Commit & Push to Hidden Ref)
+# ----------------------------------------------------
+push_dev() {
+    LOCAL_DEV_BRANCH="${DEV_BRANCH_NAME}"
+    REMOTE_REF="${HIDDEN_REF_PATH}" 
+    INITIAL_COMMIT_MSG="Dev Cycle Started: $(date +%Y-%m-%d %H:%M:%S)"
+
+    echo "➡️ Checking out or creating development branch: **${LOCAL_DEV_BRANCH}**"
+    checkout_dev
 
     echo "🏗️ Staging all local changes..."
     git add .
     
-    # Check if the branch has any commits yet
-    COMMIT_COUNT=$(git rev-list --count HEAD 2>/dev/null || echo 0)
+    DEV_AHEAD_COUNT=$(git rev-list --count ${MAIN_BRANCH}..HEAD 2>/dev/null || echo 0)
     
-    if [ "$COMMIT_COUNT" -eq 0 ]; then
-        # First commit: Set the initial timestamp message
-        echo "📝 Creating initial commit with message: '${INITIAL_COMMIT_MSG}'"
+    if [ "$DEV_AHEAD_COUNT" -eq 0 ]; then
+        # No dev-only commits yet; create a fresh dev commit instead of mutating main's tip
+        echo "📝 Creating initial dev commit with message: '${INITIAL_COMMIT_MSG}'"
         git commit -m "${INITIAL_COMMIT_MSG}" || { echo "⚠️ No changes to commit."; }
     else
-        # Subsequent commits use amend --no-edit to bundle changes without changing the message
-        echo "📝 Amending previous commit to hide local history (message preserved)."
+        # Subsequent pushes hide local history by amending the existing dev commit
+        echo "📝 Amending previous dev commit to hide local history (message preserved)."
         git commit --amend --no-edit || { echo "⚠️ No changes to amend."; }
     fi
     
@@ -51,25 +57,28 @@ push_dev() {
     echo "⏫ Force pushing changes to hidden remote ref: **${REMOTE_REF}**..."
     git push --force origin "HEAD:${REMOTE_REF}" || exit 1
     
-    echo "✅ Development push complete."
+    echo "✅ Development push complete. Access via hidden ref is enabled."
 }
 
-# ---
+# ----------------------------------------------------
 ## ⬇️ Pull (Sync from Hidden Ref)
-# 3) pull_dev: Fetches and checks out the hidden ref
-
+# ----------------------------------------------------
 pull_dev() {
     LOCAL_DEV_BRANCH="${DEV_BRANCH_NAME}"
     REMOTE_REF="${HIDDEN_REF_PATH}"
 
-    # Ensure we are not on the branch we are about to delete
+    # Protect against deleting local work if dirty
+    if [[ -n "$(git status --porcelain)" ]]; then
+        echo "❌ Working tree not clean. Commit/stash changes before pulling dev."
+        exit 1
+    fi
+
     CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
     if [[ "${CURRENT_BRANCH}" == "${LOCAL_DEV_BRANCH}" ]]; then
         echo "➡️ Moving to **${MAIN_BRANCH}** temporarily before deletion..."
         git checkout ${MAIN_BRANCH} || { echo "❌ Could not checkout **${MAIN_BRANCH}**."; exit 1; }
     fi
 
-    # Delete the existing local branch if it exists 
     if git rev-parse --verify ${LOCAL_DEV_BRANCH} >/dev/null 2>&1; then
         echo "🗑️ Deleting existing local branch: **${LOCAL_DEV_BRANCH}**"
         git branch -D ${LOCAL_DEV_BRANCH}
@@ -77,65 +86,93 @@ pull_dev() {
 
     echo "⬇️ Fetching and checking out fresh local branch from hidden remote ref: **${REMOTE_REF}**"
     
-    # Fetch the specific hidden ref and create a local branch from it
     if git fetch origin "${REMOTE_REF}:${LOCAL_DEV_BRANCH}" >/dev/null 2>&1; then
         git checkout ${LOCAL_DEV_BRANCH}
         echo "✅ Pulled and checked out local branch **${LOCAL_DEV_BRANCH}**."
     else
-        echo "❌ Remote hidden reference **${REMOTE_REF}** not found. Please run 'git-workflow.sh push' first."
+        echo "❌ Remote hidden reference **${REMOTE_REF}** not found. Please run 'autogit push' first."
         exit 1
     fi
 }
 
-# ---
-
-## 🚢 Release (Merge to Main & Cleanup)
-
-# 4 & 5) release: Squashes the hidden ref into main, and deletes the hidden ref.
+# ----------------------------------------------------
+## 🚢 Release (Squash dev onto main, keep history, reset hidden seed)
+# ----------------------------------------------------
 release() {
-    LOCAL_DEV_BRANCH="${DEV_BRANCH_NAME}"
-    REMOTE_REF="${HIDDEN_REF_PATH}"
+    LOCAL_SOURCE_BRANCH="${DEV_BRANCH_NAME}"
+    REMOTE_TARGET_BRANCH="${MAIN_BRANCH}"
+    REMOTE_NAME="origin"
 
-    # 1. Ensure we are on the main branch
-    echo "➡️ Checking out **${MAIN_BRANCH}** branch..."
-    git checkout ${MAIN_BRANCH} || exit 1
-    git pull origin ${MAIN_BRANCH} # Get latest main before merging
+    echo "=========================================================="
+    echo "🔐 Release: squash '${LOCAL_SOURCE_BRANCH}' onto '${REMOTE_TARGET_BRANCH}' and keep history"
+    echo "=========================================================="
 
-    # 2. Ask user for squashed commit message
-    read -p "Enter a **SQUASHED** commit message for the release: " RELEASE_MSG
-    
-    if [[ -z "${RELEASE_MSG}" ]]; then
-        echo "❌ Release message cannot be empty. Aborting release."
+    # Ensure clean working tree
+    if [[ -n "$(git status --porcelain)" ]]; then
+        echo "❌ Working tree not clean. Commit/stash changes before releasing."
         exit 1
     fi
 
-    echo "🔄 Squashing and merging **${LOCAL_DEV_BRANCH}** from hidden ref into **${MAIN_BRANCH}**..."
-    
-    # Merge the contents of the remote hidden ref into main
-    if ! git merge --squash "${REMOTE_REF}"; then
-        echo "❌ Merge failed. Please resolve conflicts manually and then run 'git commit -m \"$RELEASE_MSG\"' and 'git push'."
+    # Ensure source branch exists
+    if ! git rev-parse --verify ${LOCAL_SOURCE_BRANCH} >/dev/null 2>&1; then
+        echo "❌ Error: Local source branch **${LOCAL_SOURCE_BRANCH}** not found."
         exit 1
     fi
-    
-    # 3. Commit the squashed merge with the user-provided message
-    echo "📝 Committing squashed merge with message: **'${RELEASE_MSG}'**"
-    git commit -m "${RELEASE_MSG}" || { echo "⚠️ Nothing to commit (already merged?)."; exit 1; }
 
-    # 4. Push to remote main
-    echo "🚀 Pushing release commit to **origin/${MAIN_BRANCH}**..."
-    git push origin ${MAIN_BRANCH} || exit 1
-    echo "✅ Release to **${MAIN_BRANCH}** complete."
+    # Make sure main is checked out
+    git checkout ${REMOTE_TARGET_BRANCH} || { echo "❌ Failed to checkout **${REMOTE_TARGET_BRANCH}**."; exit 1; }
+    echo "➡️ Switched to branch: **${REMOTE_TARGET_BRANCH}**"
 
-    # 5. Delete the dev branch (local and HIDDEN remote ref)
-    echo "🧹 Deleting local development branch: **${LOCAL_DEV_BRANCH}**"
-    git branch -D ${LOCAL_DEV_BRANCH} 
-    
-    echo "🗑️ Deleting hidden remote reference: **${REMOTE_REF}**"
-    # To delete a custom ref, you push nothing to it:
-    git push origin :${REMOTE_REF} || { echo "⚠️ Remote reference may not have existed."; }
-    
-    echo "🎉 Cleanup complete."
+    # Squash-merge dev content onto main tip
+    echo "🔄 Squashing **${LOCAL_SOURCE_BRANCH}** into **${REMOTE_TARGET_BRANCH}**..."
+    if ! git merge --squash ${LOCAL_SOURCE_BRANCH}; then
+        echo "❌ Squash merge failed. Resolve conflicts and retry."
+        exit 1
+    fi
+
+    if [[ -z "$(git status --porcelain)" ]]; then
+        echo "⚠️ No changes to commit from **${LOCAL_SOURCE_BRANCH}**. Aborting release."
+        git merge --abort >/dev/null 2>&1
+        exit 1
+    fi
+
+    # Get final commit message from user
+    read -p "Enter the **FINAL** commit message for **${REMOTE_TARGET_BRANCH}**: " FINAL_COMMIT_MSG
+    if [[ -z "${FINAL_COMMIT_MSG}" ]]; then
+        echo "❌ Commit message cannot be empty. Aborting."
+        git reset --hard HEAD >/dev/null 2>&1
+        exit 1
+    fi
+
+    echo "📝 Creating release commit with message: '${FINAL_COMMIT_MSG}'"
+    if ! git commit -m "${FINAL_COMMIT_MSG}"; then
+        echo "❌ Commit failed."
+        exit 1
+    fi
+
+    # Push main with new release commit
+    echo "🚀 Pushing **${REMOTE_TARGET_BRANCH}** to **${REMOTE_NAME}**..."
+    if ! git push ${REMOTE_NAME} ${REMOTE_TARGET_BRANCH}; then
+        echo "❌ Push failed."
+        exit 1
+    fi
+
+    # Reset hidden ref seed to released main
+    echo "🧭 Resetting hidden ref seed to **${REMOTE_TARGET_BRANCH}**..."
+    if ! git push --force ${REMOTE_NAME} ${REMOTE_TARGET_BRANCH}:${HIDDEN_REF_PATH}; then
+        echo "❌ Failed to reset hidden ref seed."
+        exit 1
+    fi
+
+    # Start new dev cycle from fresh main
+    echo "🧹 Cleaning up local dev branch for next cycle..."
+    if git rev-parse --verify ${LOCAL_SOURCE_BRANCH} >/dev/null 2>&1; then
+        git branch -D ${LOCAL_SOURCE_BRANCH}
+    fi
+    echo "✅ Release complete. Hidden ref now mirrors ${REMOTE_TARGET_BRANCH}."
 }
+
+# --- Script Execution ---
 
 if [ $# -eq 0 ]; then
     echo "Usage: $0 {push|pull|release}"
